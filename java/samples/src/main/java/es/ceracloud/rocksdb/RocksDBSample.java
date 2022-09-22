@@ -1,292 +1,122 @@
 package es.ceracloud.rocksdb;
 
-import java.lang.IllegalArgumentException;
+import org.rocksdb.*;
+
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
-import java.util.ArrayList;
-
-import org.rocksdb.*;
-import org.rocksdb.util.SizeUnit;
+import java.util.stream.Collectors;
 
 public class RocksDBSample {
+    private static final String dbPath   = "/home/tjulian/temp/rocksdb-data/";
+    private static final String cfdbPath = "/home/tjulian/temp/rocksdb-data-cf/";
+
     static {
         RocksDB.loadLibrary();
     }
 
-    public static void main(final String[] args) {
-        if (args.length < 1) {
-            System.out.println("usage: RocksDBSample db_path");
-            System.exit(-1);
-        }
+    //  RocksDB.DEFAULT_COLUMN_FAMILY
+    public void testDefaultColumnFamily() {
+        System.out.println("testDefaultColumnFamily begin...");
+        //If the file does not exist, create the file first
+        try (final Options options = new Options().setCreateIfMissing(true)) {
+            try (final RocksDB rocksDB = RocksDB.open(options, dbPath)) {
+                //Simple key value
+                byte[] key = "Hello".getBytes();
+                rocksDB.put(key, "World".getBytes());
 
-        final String db_path = args[0];
-        final String db_path_not_found = db_path + "_not_found";
+                System.out.println(new String(rocksDB.get(key)));
 
-        System.out.println("RocksDBSample");
-        try (final Options options = new Options();
-             final Filter bloomFilter = new BloomFilter(10);
-             final ReadOptions readOptions = new ReadOptions()
-                     .setFillCache(false);
-             final Statistics stats = new Statistics();
-             final RateLimiter rateLimiter = new RateLimiter(10000000,10000, 10)) {
+                rocksDB.put("SecondKey".getBytes(), "SecondValue".getBytes());
 
-            try (final RocksDB db = RocksDB.open(options, db_path_not_found)) {
-                assert (false);
-            } catch (final RocksDBException e) {
-                System.out.format("Caught the expected exception -- %s\n", e);
+                //Query primary key through list
+                List<byte[]> keys = Arrays.asList(key, "SecondKey".getBytes(), "missKey".getBytes());
+                List<byte[]> values = rocksDB.multiGetAsList(keys);
+                for (int i = 0; i < keys.size(); i++) {
+                    System.out.println("multiGet " + new String(keys.get(i)) + ":" + (values.get(i) != null ? new String(values.get(i)) : null));
+                }
+
+                //Print all [key - value]
+                RocksIterator iter = rocksDB.newIterator();
+                for (iter.seekToFirst(); iter.isValid(); iter.next()) {
+                    System.out.println("iterator key:" + new String(iter.key()) + ", iter value:" + new String(iter.value()));
+                }
+
+                //Delete a key
+                rocksDB.delete(key);
+                System.out.println("after remove key:" + new String(key));
+
+                iter = rocksDB.newIterator();
+                for (iter.seekToFirst(); iter.isValid(); iter.next()) {
+                    System.out.println("iterator key:" + new String(iter.key()) + ", iter value:" + new String(iter.value()));
+                }
             }
-
-            try {
-                options.setCreateIfMissing(true)
-                        .setStatistics(stats)
-                        .setWriteBufferSize(8 * SizeUnit.KB)
-                        .setMaxWriteBufferNumber(3)
-                        .setMaxBackgroundJobs(10)
-                        .setCompressionType(CompressionType.ZLIB_COMPRESSION)
-                        .setCompactionStyle(CompactionStyle.UNIVERSAL);
-            } catch (final IllegalArgumentException e) {
-                assert (false);
-            }
-
-            assert (options.createIfMissing() == true);
-            assert (options.writeBufferSize() == 8 * SizeUnit.KB);
-            assert (options.maxWriteBufferNumber() == 3);
-            assert (options.maxBackgroundJobs() == 10);
-            assert (options.compressionType() == CompressionType.ZLIB_COMPRESSION);
-            assert (options.compactionStyle() == CompactionStyle.UNIVERSAL);
-
-            assert (options.memTableFactoryName().equals("SkipListFactory"));
-            options.setMemTableConfig(
-                    new HashSkipListMemTableConfig()
-                            .setHeight(4)
-                            .setBranchingFactor(4)
-                            .setBucketCount(2000000));
-            assert (options.memTableFactoryName().equals("HashSkipListRepFactory"));
-
-            options.setMemTableConfig(
-                    new HashLinkedListMemTableConfig()
-                            .setBucketCount(100000));
-            assert (options.memTableFactoryName().equals("HashLinkedListRepFactory"));
-
-            options.setMemTableConfig(
-                    new VectorMemTableConfig().setReservedSize(10000));
-            assert (options.memTableFactoryName().equals("VectorRepFactory"));
-
-            options.setMemTableConfig(new SkipListMemTableConfig());
-            assert (options.memTableFactoryName().equals("SkipListFactory"));
-
-            options.setTableFormatConfig(new PlainTableConfig());
-            // Plain-Table requires mmap read
-            options.setAllowMmapReads(true);
-            assert (options.tableFactoryName().equals("PlainTable"));
-
-            options.setRateLimiter(rateLimiter);
-
-            final BlockBasedTableConfig table_options = new BlockBasedTableConfig();
-            Cache cache = new LRUCache(64 * 1024, 6);
-            table_options.setBlockCache(cache)
-                    .setFilterPolicy(bloomFilter)
-                    .setBlockSizeDeviation(5)
-                    .setBlockRestartInterval(10)
-                    .setCacheIndexAndFilterBlocks(true)
-                    .setBlockCacheCompressed(new LRUCache(64 * 1000, 10));
-
-            assert (table_options.blockSizeDeviation() == 5);
-            assert (table_options.blockRestartInterval() == 10);
-            assert (table_options.cacheIndexAndFilterBlocks() == true);
-
-            options.setTableFormatConfig(table_options);
-            assert (options.tableFactoryName().equals("BlockBasedTable"));
-
-            try (final RocksDB db = RocksDB.open(options, db_path)) {
-                db.put("hello".getBytes(), "world".getBytes());
-
-                final byte[] value = db.get("hello".getBytes());
-                assert ("world".equals(new String(value)));
-
-                final String str = db.getProperty("rocksdb.stats");
-                assert (str != null && !str.equals(""));
-            } catch (final RocksDBException e) {
-                System.out.format("[ERROR] caught the unexpected exception -- %s\n", e);
-                assert (false);
-            }
-
-            try (final RocksDB db = RocksDB.open(options, db_path)) {
-                db.put("hello".getBytes(), "world".getBytes());
-                byte[] value = db.get("hello".getBytes());
-                System.out.format("Get('hello') = %s\n",
-                        new String(value));
-
-                for (int i = 1; i <= 9; ++i) {
-                    for (int j = 1; j <= 9; ++j) {
-                        db.put(String.format("%dx%d", i, j).getBytes(),
-                                String.format("%d", i * j).getBytes());
-                    }
-                }
-
-                for (int i = 1; i <= 9; ++i) {
-                    for (int j = 1; j <= 9; ++j) {
-                        System.out.format("%s ", new String(db.get(
-                                String.format("%dx%d", i, j).getBytes())));
-                    }
-                    System.out.println("");
-                }
-
-                // write batch test
-                try (final WriteOptions writeOpt = new WriteOptions()) {
-                    for (int i = 10; i <= 19; ++i) {
-                        try (final WriteBatch batch = new WriteBatch()) {
-                            for (int j = 10; j <= 19; ++j) {
-                                batch.put(String.format("%dx%d", i, j).getBytes(),
-                                        String.format("%d", i * j).getBytes());
-                            }
-                            db.write(writeOpt, batch);
-                        }
-                    }
-                }
-                for (int i = 10; i <= 19; ++i) {
-                    for (int j = 10; j <= 19; ++j) {
-                        assert (new String(
-                                db.get(String.format("%dx%d", i, j).getBytes())).equals(
-                                String.format("%d", i * j)));
-                        System.out.format("%s ", new String(db.get(
-                                String.format("%dx%d", i, j).getBytes())));
-                    }
-                    System.out.println("");
-                }
-
-                value = db.get("1x1".getBytes());
-                assert (value != null);
-                value = db.get("world".getBytes());
-                assert (value == null);
-                value = db.get(readOptions, "world".getBytes());
-                assert (value == null);
-
-                final byte[] testKey = "asdf".getBytes();
-                final byte[] testValue =
-                        "asdfghjkl;'?><MNBVCXZQWERTYUIOP{+_)(*&^%$#@".getBytes();
-                db.put(testKey, testValue);
-                byte[] testResult = db.get(testKey);
-                assert (testResult != null);
-                assert (Arrays.equals(testValue, testResult));
-                assert (new String(testValue).equals(new String(testResult)));
-                testResult = db.get(readOptions, testKey);
-                assert (testResult != null);
-                assert (Arrays.equals(testValue, testResult));
-                assert (new String(testValue).equals(new String(testResult)));
-
-                final byte[] insufficientArray = new byte[10];
-                final byte[] enoughArray = new byte[50];
-                int len;
-                len = db.get(testKey, insufficientArray);
-                assert (len > insufficientArray.length);
-                len = db.get("asdfjkl;".getBytes(), enoughArray);
-                assert (len == RocksDB.NOT_FOUND);
-                len = db.get(testKey, enoughArray);
-                assert (len == testValue.length);
-
-                len = db.get(readOptions, testKey, insufficientArray);
-                assert (len > insufficientArray.length);
-                len = db.get(readOptions, "asdfjkl;".getBytes(), enoughArray);
-                assert (len == RocksDB.NOT_FOUND);
-                len = db.get(readOptions, testKey, enoughArray);
-                assert (len == testValue.length);
-
-                db.delete(testKey);
-                len = db.get(testKey, enoughArray);
-                assert (len == RocksDB.NOT_FOUND);
-
-                // repeat the test with WriteOptions
-                try (final WriteOptions writeOpts = new WriteOptions()) {
-                    writeOpts.setSync(true);
-                    writeOpts.setDisableWAL(false);
-                    db.put(writeOpts, testKey, testValue);
-                    len = db.get(testKey, enoughArray);
-                    assert (len == testValue.length);
-                    assert (new String(testValue).equals(
-                            new String(enoughArray, 0, len)));
-                }
-
-                try {
-                    for (final TickerType statsType : TickerType.values()) {
-                        if (statsType != TickerType.TICKER_ENUM_MAX) {
-                            stats.getTickerCount(statsType);
-                        }
-                    }
-                    System.out.println("getTickerCount() passed.");
-                } catch (final Exception e) {
-                    System.out.println("Failed in call to getTickerCount()");
-                    assert (false); //Should never reach here.
-                }
-
-                try {
-                    for (final HistogramType histogramType : HistogramType.values()) {
-                        if (histogramType != HistogramType.HISTOGRAM_ENUM_MAX) {
-                            HistogramData data = stats.getHistogramData(histogramType);
-                        }
-                    }
-                    System.out.println("getHistogramData() passed.");
-                } catch (final Exception e) {
-                    System.out.println("Failed in call to getHistogramData()");
-                    assert (false); //Should never reach here.
-                }
-
-                try (final RocksIterator iterator = db.newIterator()) {
-
-                    boolean seekToFirstPassed = false;
-                    for (iterator.seekToFirst(); iterator.isValid(); iterator.next()) {
-                        iterator.status();
-                        assert (iterator.key() != null);
-                        assert (iterator.value() != null);
-                        seekToFirstPassed = true;
-                    }
-                    if (seekToFirstPassed) {
-                        System.out.println("iterator seekToFirst tests passed.");
-                    }
-
-                    boolean seekToLastPassed = false;
-                    for (iterator.seekToLast(); iterator.isValid(); iterator.prev()) {
-                        iterator.status();
-                        assert (iterator.key() != null);
-                        assert (iterator.value() != null);
-                        seekToLastPassed = true;
-                    }
-
-                    if (seekToLastPassed) {
-                        System.out.println("iterator seekToLastPassed tests passed.");
-                    }
-
-                    iterator.seekToFirst();
-                    iterator.seek(iterator.key());
-                    assert (iterator.key() != null);
-                    assert (iterator.value() != null);
-
-                    System.out.println("iterator seek test passed.");
-
-                }
-                System.out.println("iterator tests passed.");
-
-                final List<byte[]> keys = new ArrayList<>();
-                try (final RocksIterator iterator = db.newIterator()) {
-                    for (iterator.seekToLast(); iterator.isValid(); iterator.prev()) {
-                        keys.add(iterator.key());
-                    }
-                }
-
-                List<byte[]> values = db.multiGetAsList(keys);
-                assert (values.size() == keys.size());
-                for (final byte[] value1 : values) {
-                    assert (value1 != null);
-                }
-
-                values = db.multiGetAsList(new ReadOptions(), keys);
-                assert (values.size() == keys.size());
-                for (final byte[] value1 : values) {
-                    assert (value1 != null);
-                }
-            } catch (final RocksDBException e) {
-                System.err.println(e);
-            }
+        } catch (RocksDBException e) {
+            e.printStackTrace();
         }
     }
+
+    //Using a specific column family to open a database, you can understand a column family as a table in a relational database
+    public void testCertainColumnFamily() {
+        System.out.println("\ntestCertainColumnFamily begin...");
+        try (final ColumnFamilyOptions cfOpts = new ColumnFamilyOptions().optimizeUniversalStyleCompaction()) {
+            String cfName = "my-first-columnfamily";
+            // list of column family descriptors, first entry must always be default column family
+            final List cfDescriptors = Arrays.asList(
+                    new ColumnFamilyDescriptor(RocksDB.DEFAULT_COLUMN_FAMILY, cfOpts),
+                    new ColumnFamilyDescriptor(cfName.getBytes(), cfOpts)
+            );
+
+            List<ColumnFamilyHandle> cfHandles = new ArrayList<>();
+            try (final DBOptions dbOptions = new DBOptions().setCreateIfMissing(true).setCreateMissingColumnFamilies(true);
+                 final RocksDB rocksDB = RocksDB.open(dbOptions, cfdbPath, cfDescriptors, cfHandles)) {
+                ColumnFamilyHandle cfHandle = cfHandles.stream().filter(x -> {
+                    try {
+                        return (new String(x.getName())).equals(cfName);
+                    } catch (RocksDBException e) {
+                        return false;
+                    }
+                }).collect(Collectors.toList()).get(0);
+
+                //Write key / value
+                String key = "FirstKey";
+                rocksDB.put(cfHandle, key.getBytes(), "FirstValue".getBytes());
+                //Query single key
+                byte[] getValue = rocksDB.get(cfHandle, key.getBytes());
+                System.out.println("get Value : " + new String(getValue));
+                //Write the second key / value
+                rocksDB.put(cfHandle, "SecondKey".getBytes(), "SecondValue".getBytes());
+
+                List<byte[]> keys = Arrays.asList(key.getBytes(), "SecondKey".getBytes());
+                List cfHandleList = Arrays.asList(cfHandle, cfHandle);
+                //Query multiple keys
+                List<byte[]> values = rocksDB.multiGetAsList(cfHandleList, keys);
+                for (int i = 0; i < keys.size(); i++) {
+                    System.out.println("multiGet:" + new String(keys.get(i)) + "--" + (values.get(i) == null ? null : new String(values.get(i))));
+                }
+
+                //Delete single key
+                rocksDB.delete(cfHandle, key.getBytes());
+
+                RocksIterator iter = rocksDB.newIterator(cfHandle);
+                for (iter.seekToFirst(); iter.isValid(); iter.next()) {
+                    System.out.println("iterator:" + new String(iter.key()) + ":" + new String(iter.value()));
+                }
+            } finally {
+                // NOTE frees the column family handles before freeing the db
+                for (final ColumnFamilyHandle cfHandle : cfHandles) {
+                    cfHandle.close();
+                }
+            }
+        } catch (RocksDBException e) {
+            e.printStackTrace();
+        } // frees the column family options
+    }
+
+    public static void main(String[] args) throws Exception {
+        RocksDBSample test = new RocksDBSample();
+        test.testDefaultColumnFamily();
+        test.testCertainColumnFamily();
+    }
+
 }

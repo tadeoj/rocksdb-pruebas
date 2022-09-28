@@ -13,3 +13,15 @@ java_binary(
     ],
 )
 
+java_binary(
+    name = "TransactionSample",
+    srcs = glob(["src/main/java/**/*.java"]),
+    main_class = "es.ceracloud.rocksdb.TransactionSample",
+    runtime_deps = [
+        "@maven//:org_rocksdb_rocksdbjni",
+    ],
+    deps = [
+        "@maven//:org_rocksdb_rocksdbjni",
+    ],
+)
+
